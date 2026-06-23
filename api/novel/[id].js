@@ -24,7 +24,7 @@ function browserHeaders() {
 async function fetchGBK(url) {
   const resp = await axios.get(url, {
     responseType: 'arraybuffer',
-    timeout: 15000,
+    timeout: 8000,
     headers: browserHeaders()
   });
   return iconv.decode(Buffer.from(resp.data), 'gbk');
@@ -40,8 +40,7 @@ async function fetchWithFallback(path) {
       lastErr = e;
     }
   }
-  // 再试一遍 http 版
-  for (const domain of DOMAINS) {
+  // 再试一�?http �?  for (const domain of DOMAINS) {
     try {
       return await fetchGBK(`http://${domain}${path}`);
     } catch (e) { /* ignore */ }
@@ -59,8 +58,7 @@ module.exports = async (req, res) => {
     const infoHtml = await fetchWithFallback(`/book/${id}.htm`);
     const $ = cheerio.load(infoHtml);
 
-    // 封面：优先取包含 id 的图片
-    let cover = '';
+    // 封面：优先取包含 id 的图�?    let cover = '';
     $('img').each((_, el) => {
       const src = $(el).attr('src') || '';
       if (src.includes('img.wenku8') && src.includes(id)) {
@@ -87,21 +85,19 @@ module.exports = async (req, res) => {
     });
     if (!title) title = $('title').text().replace(/[\s-].*$/, '').trim();
 
-    // 作者
-    let author = '';
+    // 作�?    let author = '';
     $('td').each((_, el) => {
       const txt = $(el).text().trim();
-      if (txt.includes('小说作者')) {
-        author = txt.replace(/小说作者[：:]?/, '').trim();
+      if (txt.includes('小说作�?)) {
+        author = txt.replace(/小说作者[�?]?/, '').trim();
       }
     });
-    if (!author) author = '未知作者';
+    if (!author) author = '未知作�?;
 
-    // 简介
-    let description = '';
+    // 简�?    let description = '';
     $('span.hottext').each((_, el) => {
       const txt = $(el).text().trim();
-      if (txt.includes('内容简介')) {
+      if (txt.includes('内容简�?)) {
         const next = $(el).nextAll('span').first();
         if (next.length) description = next.text().trim();
       }
@@ -168,9 +164,9 @@ module.exports = async (req, res) => {
       id,
       novelPath,
       title: title || `小说 ${id}`,
-      author: author || '未知作者',
+      author: author || '未知作�?,
       cover,
-      description: description || '暂无简介',
+      description: description || '暂无简�?,
       volumes
     });
 

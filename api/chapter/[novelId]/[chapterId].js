@@ -1,106 +1,148 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const iconv = require('iconv-lite');
+var axios = require('axios');
+var cheerio = require('cheerio');
+var iconv = require('iconv-lite');
 
-const UAS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36'
+var UAS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/125.0.0.0 Mobile Safari/537.36'
 ];
-const DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
+var DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
 
-function randomUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
-function browserHeaders() {
+function randUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
+function headers() {
   return {
-    'User-Agent': randomUA(),
+    'User-Agent': randUA(),
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'Connection': 'keep-alive'
   };
 }
 
-async function fetchWithFallback(path) {
-  let lastErr;
-  for (const domain of DOMAINS) {
-    try {
-      const url = `https://${domain}${path}`;
-      const resp = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 15000,
-        headers: browserHeaders()
-      });
-      return iconv.decode(Buffer.from(resp.data), 'gbk');
-    } catch (e) { lastErr = e; }
-  }
-  for (const domain of DOMAINS) {
-    try {
-      const url = `http://${domain}${path}`;
-      const resp = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 10000,
-        headers: browserHeaders()
-      });
-      return iconv.decode(Buffer.from(resp.data), 'gbk');
-    } catch (e) { /* ignore */ }
-  }
-  throw lastErr;
+function fetchUrl(url) {
+  return axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 8000,
+    headers: headers()
+  }).then(function(resp) {
+    return iconv.decode(Buffer.from(resp.data), 'gbk');
+  });
 }
 
-module.exports = async (req, res) => {
+function tryAll(path) {
+  var lastErr = null;
+  function attempt(domain, useHttps) {
+    var proto = useHttps ? 'https' : 'http';
+    var url = proto + '://' + domain + path;
+    return fetchUrl(url);
+  }
+  // try all https first
+  for (var i = 0; i < DOMAINS.length; i++) {
+    try { return attempt(DOMAINS[i], true); } catch (e) { lastErr = e; }
+  }
+  // then all http
+  for (var j = 0; j < DOMAINS.length; j++) {
+    try { return attempt(DOMAINS[j], false); } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('all failed');
+}
+
+module.exports = async function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { novelId, chapterId } = req.query;
+  var novelId = req.query.novelId;
+  var chapterId = req.query.chapterId;
   if (!novelId || !chapterId) {
-    return res.status(400).json({ error: '缺少参数' });
+    return res.status(400).json({ error: 'missing params' });
   }
 
   try {
-    // 优先用完整路径尝试
-    let html;
+    var result = null;
+    var firstErr = null;
+
+    // try direct path
     try {
-      html = await fetchWithFallback(`/novel/${novelId}/${chapterId}.htm`);
-    } catch (e1) {
-      let found = false;
-      for (let cat = 1; cat <= 9; cat++) {
+      result = await tryAll('/novel/' + novelId + '/' + chapterId + '.htm');
+    } catch (e) { firstErr = e; }
+
+    // try category prefixes
+    if (!result) {
+      for (var cat = 1; cat <= 9; cat++) {
         try {
-          html = await fetchWithFallback(`/novel/${cat}/${novelId}/${chapterId}.htm`);
-          found = true;
-          break;
-        } catch (e) { /* 继续尝试 */ }
+          result = await tryAll('/novel/' + cat + '/' + novelId + '/' + chapterId + '.htm');
+          if (result) break;
+        } catch (e) { firstErr = e; }
       }
-      if (!found) throw new Error(`未能找到章节 ${novelId}/${chapterId}`);
     }
 
-    const $ = cheerio.load(html);
+    if (!result) {
+      return res.status(404).json({
+        error: 'chapter not found',
+        detail: 'all domains and path patterns tried',
+        novelId: novelId, chapterId: chapterId
+      });
+    }
 
-    let title = $('#title').first().text().trim();
-    if (!title) title = $('h3').first().text().trim();
-    if (!title) title = `第${chapterId}章`;
+    var $ = cheerio.load(result);
 
-    let content = '';
-    const contentDiv = $('#content').first();
+    // title
+    var title = $('#title').first().text().trim();
+    if (!title) { title = $('h3').first().text().trim(); }
+
+    // content - strategy 1: #content div
+    var content = '';
+    var contentDiv = $('#content').first();
     if (contentDiv.length) {
-      const lines = [];
-      contentDiv.contents().each((_, el) => {
+      var lines = [];
+      contentDiv.contents().each(function() {
+        var el = this;
         if (el.type === 'text') {
-          const text = $(el).text().trim();
-          if (text) lines.push(text);
-        } else if (el.type === 'tag' && (el.tagName === 'p' || el.tagName === 'div')) {
-          const text = $(el).text().trim();
-          if (text) lines.push(text);
+          var txt = $(el).text().trim();
+          if (txt) { lines.push(txt); }
+        } else if (el.type === 'tag') {
+          var txt = $(el).text().trim();
+          if (txt) { lines.push(txt); }
         }
       });
       content = lines.join('\n\n');
     }
 
-    if (!content) {
-      content = $('body').text().replace(/\s+/g, ' ').trim();
+    // strategy 2: #BookContent or #htmlContent
+    if (!content || content.length < 100) {
+      var altDiv = $('#BookContent').first();
+      if (!altDiv.length) { altDiv = $('#htmlContent').first(); }
+      if (!altDiv.length) { altDiv = $('.content').first(); }
+      if (altDiv.length) {
+        content = altDiv.text().trim();
+      }
     }
 
-    res.json({ novelId, chapterId, title, content });
+    // strategy 3: strip non-content elements
+    if (!content || content.length < 100) {
+      var body = $('body').clone();
+      body.find('script,style,iframe,header,footer,nav,#adv1,#adv6,'
+        + '#adtop,#headlink,#adv900,#adv300,#adbottom').remove();
+      var allText = body.text().replace(/\s+/g, ' ').trim();
+      // keep text longer than 200 chars
+      if (allText.length > 200) {
+        content = allText;
+      }
+    }
+
+    if (!title) { title = 'Chapter ' + chapterId; }
+
+    res.json({
+      novelId: novelId,
+      chapterId: chapterId,
+      title: title,
+      content: content
+    });
 
   } catch (err) {
-    console.error(`[ERROR] 获取章节 ${novelId}/${chapterId} 失败:`, err.message);
-    res.status(500).json({ error: `获取章节失败: ${err.message}` });
+    res.status(500).json({
+      error: 'server error',
+      detail: err.message,
+      novelId: novelId, chapterId: chapterId
+    });
   }
 };
