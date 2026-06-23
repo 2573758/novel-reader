@@ -1,177 +1,144 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const iconv = require('iconv-lite');
+var axios = require('axios');
+var cheerio = require('cheerio');
+var iconv = require('iconv-lite');
 
-const UAS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36'
+var DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
+var UAS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) Version/17.5 Mobile/15E148',
+  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0.0.0 Mobile'
 ];
-const DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
 
-function randomUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
-function browserHeaders() {
-  return {
-    'User-Agent': randomUA(),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate',
-    'Connection': 'keep-alive',
-    'Cache-Control': 'max-age=0'
-  };
+function rndUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
+function hdrs() {
+  return { 'User-Agent': rndUA(), 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9' };
 }
 
-async function fetchGBK(url) {
-  const resp = await axios.get(url, {
-    responseType: 'arraybuffer',
-    timeout: 8000,
-    headers: browserHeaders()
-  });
-  return iconv.decode(Buffer.from(resp.data), 'gbk');
+function fetchOne(url) {
+  return axios.get(url, { responseType: 'arraybuffer', timeout: 10000, headers: hdrs() })
+    .then(function(r) { return iconv.decode(Buffer.from(r.data), 'gbk'); });
 }
 
-/** 依次尝试多个域名直到成功 */
-async function fetchWithFallback(path) {
-  let lastErr;
-  for (const domain of DOMAINS) {
-    try {
-      return await fetchGBK(`https://${domain}${path}`);
-    } catch (e) {
-      lastErr = e;
-    }
+async function fetchAny(path) {
+  var jobs = [];
+  // all HTTPS domains in parallel
+  for (var i = 0; i < DOMAINS.length; i++) {
+    jobs.push(fetchOne('https://' + DOMAINS[i] + path).catch(function() { return null; }));
   }
-  // 再试一�?http �?  for (const domain of DOMAINS) {
-    try {
-      return await fetchGBK(`http://${domain}${path}`);
-    } catch (e) { /* ignore */ }
+  // all HTTP domains in parallel
+  for (var j = 0; j < DOMAINS.length; j++) {
+    jobs.push(fetchOne('http://' + DOMAINS[j] + path).catch(function() { return null; }));
   }
-  throw lastErr;
+  var results = await Promise.all(jobs);
+  for (var k = 0; k < results.length; k++) {
+    if (results[k] && results[k].length > 200) return results[k];
+  }
+  throw new Error('fetch failed for: ' + path);
 }
 
-module.exports = async (req, res) => {
+module.exports = async function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-
-  const id = req.query.id;
-  if (!id) return res.status(400).json({ error: '缺少小说 ID' });
+  var id = req.query.id;
+  if (!id) return res.status(400).json({ error: 'missing id' });
 
   try {
-    const infoHtml = await fetchWithFallback(`/book/${id}.htm`);
-    const $ = cheerio.load(infoHtml);
+    // 1) novel info page
+    var infoHtml = await fetchAny('/book/' + id + '.htm');
+    var $ = cheerio.load(infoHtml);
 
-    // 封面：优先取包含 id 的图�?    let cover = '';
-    $('img').each((_, el) => {
-      const src = $(el).attr('src') || '';
-      if (src.includes('img.wenku8') && src.includes(id)) {
-        cover = src.startsWith('http') ? src : `https:${src}`;
+    // cover
+    var cover = '';
+    $('img').each(function() {
+      var src = $(this).attr('src') || '';
+      if (src.indexOf('img.wenku8') >= 0 && src.indexOf(id) >= 0) {
+        cover = src.indexOf('http') === 0 ? src : 'https:' + src;
       }
     });
     if (!cover) {
-      $('img').each((_, el) => {
-        const w = parseInt($(el).attr('width')) || 0;
-        const src = $(el).attr('src') || '';
-        if (w >= 150 && src.includes('img.wenku8')) {
-          cover = src.startsWith('http') ? src : `https:${src}`;
-        }
+      $('img').each(function() {
+        var w = parseInt($(this).attr('width'));
+        var src = $(this).attr('src') || '';
+        if (w >= 150 && src.indexOf('img.wenku8') >= 0) cover = src.indexOf('http') === 0 ? src : 'https:' + src;
       });
     }
 
-    // 标题
-    let title = '';
-    $('span').each((_, el) => {
-      const style = $(el).attr('style') || '';
-      if (style.includes('font-size:16px') && style.includes('font-weight: bold')) {
-        title = $(el).text().replace(/\[.*?\]/g, '').trim();
+    // title
+    var title = '';
+    $('span').each(function() {
+      var s = $(this).attr('style') || '';
+      if (s.indexOf('font-size:16px') >= 0 && s.indexOf('font-weight: bold') >= 0) {
+        title = $(this).text().replace(/\[.*?\]/g, '').trim();
       }
     });
     if (!title) title = $('title').text().replace(/[\s-].*$/, '').trim();
 
-    // 作�?    let author = '';
-    $('td').each((_, el) => {
-      const txt = $(el).text().trim();
-      if (txt.includes('小说作�?)) {
-        author = txt.replace(/小说作者[�?]?/, '').trim();
+    // author
+    var author = '';
+    $('td').each(function() {
+      var txt = $(this).text().trim();
+      if (txt.indexOf('小 说 作 者') >= 0 || txt.indexOf('小说作者') >= 0) {
+        author = txt.replace(/小.说.作.者[：:]?/, '').trim();
       }
     });
-    if (!author) author = '未知作�?;
+    if (!author) author = 'unknown';
 
-    // 简�?    let description = '';
-    $('span.hottext').each((_, el) => {
-      const txt = $(el).text().trim();
-      if (txt.includes('内容简�?)) {
-        const next = $(el).nextAll('span').first();
-        if (next.length) description = next.text().trim();
+    // description
+    var desc = '';
+    $('span.hottext').each(function() {
+      if ($(this).text().indexOf('内 容 简 介') >= 0 || $(this).text().indexOf('内容简介') >= 0) {
+        var next = $(this).nextAll('span').first();
+        if (next.length) desc = next.text().trim();
       }
     });
-    if (!description) {
-      const metaDesc = $('meta[name="description"]').attr('content');
-      if (metaDesc) description = metaDesc;
-    }
+    if (!desc) desc = $('meta[name="description"]').attr('content') || '';
 
-    // 小说目录路径
-    let novelPath = id;
-    $('a').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      if (href.includes('index.htm')) {
-        const match = href.match(/\/novel\/(.+?)\/index\.htm/);
-        if (match) novelPath = match[1].replace(/\/+$/, '');
+    // get novel path from index link
+    var novelPath = id;
+    $('a').each(function() {
+      var href = $(this).attr('href') || '';
+      if (href.indexOf('index.htm') >= 0) {
+        var m = href.match(/\/novel\/(.+?)\/index\.htm/);
+        if (m) novelPath = m[1].replace(/\/+$/, '');
       }
     });
 
-    // 章节列表
-    const idxHtml = await fetchWithFallback(`/novel/${novelPath}/index.htm`);
-    const $idx = cheerio.load(idxHtml);
+    // 2) chapter list
+    var idxHtml = await fetchAny('/novel/' + novelPath + '/index.htm');
+    var $x = cheerio.load(idxHtml);
+    var volumes = [];
+    var curVol = null;
+    var curChs = [];
 
-    const volumes = [];
-    let currentVolume = null;
-    let currentChapters = [];
-
-    $idx('table.css tr').each((_, tr) => {
-      const $tr = $idx(tr);
-      const vcss = $tr.find('td.vcss');
+    $x('table.css tr').each(function() {
+      var tr = this;
+      var vcss = $x(tr).find('td.vcss');
       if (vcss.length) {
-        if (currentVolume && currentChapters.length > 0) {
-          volumes.push({ name: currentVolume, chapters: [...currentChapters] });
-        }
-        currentVolume = vcss.first().text().trim();
-        currentChapters = [];
+        if (curVol && curChs.length > 0) { volumes.push({ name: curVol, chapters: curChs }); }
+        curVol = $x(vcss).first().text().trim();
+        curChs = [];
       } else {
-        $tr.find('td.ccss a').each((_, a) => {
-          const href = $idx(a).attr('href') || '';
-          const match = href.match(/(\d+)\.htm/);
-          if (match) {
-            currentChapters.push({ id: match[1], title: $idx(a).text().trim() });
-          }
+        $x(tr).find('td.ccss a').each(function() {
+          var href = $x(this).attr('href') || '';
+          var m = href.match(/(\d+)\.htm/);
+          if (m) curChs.push({ id: m[1], title: $x(this).text().trim() });
         });
       }
     });
-    if (currentVolume && currentChapters.length > 0) {
-      volumes.push({ name: currentVolume, chapters: [...currentChapters] });
-    }
+    if (curVol && curChs.length > 0) volumes.push({ name: curVol, chapters: curChs });
 
     if (volumes.length === 0) {
-      const allCh = [];
-      $idx('a[href*=".htm"]').each((_, a) => {
-        const href = $idx(a).attr('href') || '';
-        const match = href.match(/(\d+)\.htm/);
-        if (match && !href.includes('index')) {
-          allCh.push({ id: match[1], title: $idx(a).text().trim() });
-        }
+      var allCh = [];
+      $x('a[href*=".htm"]').each(function() {
+        var href = $x(this).attr('href') || '';
+        var m = href.match(/(\d+)\.htm/);
+        if (m && href.indexOf('index') < 0) allCh.push({ id: m[1], title: $x(this).text().trim() });
       });
-      if (allCh.length > 0) volumes.push({ name: '正文', chapters: allCh });
+      if (allCh.length > 0) volumes.push({ name: 'text', chapters: allCh });
     }
 
-    res.json({
-      id,
-      novelPath,
-      title: title || `小说 ${id}`,
-      author: author || '未知作�?,
-      cover,
-      description: description || '暂无简�?,
-      volumes
-    });
+    res.json({ id: id, novelPath: novelPath, title: title, author: author, cover: cover, description: desc, volumes: volumes });
 
   } catch (err) {
-    console.error(`[ERROR] 获取小说 ${id} 失败:`, err.message);
-    res.status(500).json({ error: `获取小说失败: ${err.message}` });
+    res.status(500).json({ error: err.message });
   }
 };
