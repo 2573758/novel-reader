@@ -2,26 +2,61 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const iconv = require('iconv-lite');
 
-const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
+const UAS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36'
+];
+const DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
+
+function randomUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
+function browserHeaders() {
+  return {
+    'User-Agent': randomUA(),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+    'Cache-Control': 'max-age=0'
+  };
+}
 
 async function fetchGBK(url) {
   const resp = await axios.get(url, {
     responseType: 'arraybuffer',
     timeout: 15000,
-    headers: { 'User-Agent': UA }
+    headers: browserHeaders()
   });
   return iconv.decode(Buffer.from(resp.data), 'gbk');
 }
 
+/** 依次尝试多个域名直到成功 */
+async function fetchWithFallback(path) {
+  let lastErr;
+  for (const domain of DOMAINS) {
+    try {
+      return await fetchGBK(`https://${domain}${path}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  // 再试一遍 http 版
+  for (const domain of DOMAINS) {
+    try {
+      return await fetchGBK(`http://${domain}${path}`);
+    } catch (e) { /* ignore */ }
+  }
+  throw lastErr;
+}
+
 module.exports = async (req, res) => {
-  // 允许跨域
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: '缺少小说 ID' });
 
   try {
-    const infoHtml = await fetchGBK(`https://www.wenku8.net/book/${id}.htm`);
+    const infoHtml = await fetchWithFallback(`/book/${id}.htm`);
     const $ = cheerio.load(infoHtml);
 
     // 封面：优先取包含 id 的图片
@@ -87,7 +122,7 @@ module.exports = async (req, res) => {
     });
 
     // 章节列表
-    const idxHtml = await fetchGBK(`https://www.wenku8.net/novel/${novelPath}/index.htm`);
+    const idxHtml = await fetchWithFallback(`/novel/${novelPath}/index.htm`);
     const $idx = cheerio.load(idxHtml);
 
     const volumes = [];

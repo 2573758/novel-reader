@@ -2,7 +2,49 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const iconv = require('iconv-lite');
 
-const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
+const UAS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36'
+];
+const DOMAINS = ['www.wenku8.net', 'www.wen8.net', 'www.wenku8.com'];
+
+function randomUA() { return UAS[Math.floor(Math.random() * UAS.length)]; }
+function browserHeaders() {
+  return {
+    'User-Agent': randomUA(),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Connection': 'keep-alive'
+  };
+}
+
+async function fetchWithFallback(path) {
+  let lastErr;
+  for (const domain of DOMAINS) {
+    try {
+      const url = `https://${domain}${path}`;
+      const resp = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        headers: browserHeaders()
+      });
+      return iconv.decode(Buffer.from(resp.data), 'gbk');
+    } catch (e) { lastErr = e; }
+  }
+  for (const domain of DOMAINS) {
+    try {
+      const url = `http://${domain}${path}`;
+      const resp = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 10000,
+        headers: browserHeaders()
+      });
+      return iconv.decode(Buffer.from(resp.data), 'gbk');
+    } catch (e) { /* ignore */ }
+  }
+  throw lastErr;
+}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,24 +55,15 @@ module.exports = async (req, res) => {
   }
 
   try {
-    async function tryFetch(novelPath) {
-      const url = `https://www.wenku8.net/novel/${novelPath}/${chapterId}.htm`;
-      const resp = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 15000,
-        headers: { 'User-Agent': UA }
-      });
-      return iconv.decode(Buffer.from(resp.data), 'gbk');
-    }
-
+    // 优先用完整路径尝试
     let html;
     try {
-      html = await tryFetch(novelId);
+      html = await fetchWithFallback(`/novel/${novelId}/${chapterId}.htm`);
     } catch (e1) {
       let found = false;
       for (let cat = 1; cat <= 9; cat++) {
         try {
-          html = await tryFetch(`${cat}/${novelId}`);
+          html = await fetchWithFallback(`/novel/${cat}/${novelId}/${chapterId}.htm`);
           found = true;
           break;
         } catch (e) { /* 继续尝试 */ }
