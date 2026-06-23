@@ -1,0 +1,9 @@
+node_modules/
+npm-debug.log*
+.env
+*.zip
+*.exe
+ngrok*.log
+test_*.html
+outputs/
+work/
