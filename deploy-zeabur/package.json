@@ -1,0 +1,15 @@
+{
+  "name": "wenku8-relay",
+  "version": "1.0.0",
+  "description": "wenku8.net 中继代理服务器 - 部署在 Zeabur",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "iconv-lite": "^0.6.3"
+  }
+}

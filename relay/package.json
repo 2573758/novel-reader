@@ -1,0 +1,15 @@
+{
+  "name": "wenku8-relay-server",
+  "version": "1.0.0",
+  "description": "中继代理服务器 - 包含完整 API 和中继转发",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "iconv-lite": "^0.6.3"
+  }
+}
